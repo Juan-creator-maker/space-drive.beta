@@ -1,0 +1,579 @@
+// Space Drive - Beta - Web Version
+// Main Game File
+
+class Vector2 {
+    constructor(x = 0, y = 0) {
+        this.x = x;
+        this.y = y;
+    }
+
+    add(other) {
+        return new Vector2(this.x + other.x, this.y + other.y);
+    }
+
+    subtract(other) {
+        return new Vector2(this.x - other.x, this.y - other.y);
+    }
+
+    multiply(scalar) {
+        return new Vector2(this.x * scalar, this.y * scalar);
+    }
+
+    magnitude() {
+        return Math.sqrt(this.x * this.x + this.y * this.y);
+    }
+
+    normalize() {
+        const mag = this.magnitude();
+        if (mag === 0) return new Vector2(0, 0);
+        return new Vector2(this.x / mag, this.y / mag);
+    }
+}
+
+class Player {
+    constructor(x, y) {
+        this.pos = new Vector2(x, y);
+        this.vel = new Vector2(0, 0);
+        this.rotation = 0;
+        this.radius = 8;
+
+        // Stats (SS2 Tanque)
+        this.health = 150;
+        this.maxHealth = 150;
+        this.speed = 150;
+        this.meleeDamage = 10;
+        this.meleeRange = 30;
+        this.asteroidDamage = 20;
+
+        // Cooldowns
+        this.meleeCooldown = 0;
+        this.asteroidCooldown = 0;
+        this.asteroidCooldownMax = 0.5;
+
+        // Projectiles
+        this.asteroids = [];
+
+        // Input
+        this.keys = {};
+        this.mousePos = new Vector2(400, 300);
+    }
+
+    handleInput(keys, mousePos) {
+        this.keys = keys;
+        this.mousePos = mousePos;
+
+        // Movement
+        this.vel.x = 0;
+        this.vel.y = 0;
+
+        const moveDir = new Vector2(0, 0);
+        if (keys['w']) moveDir.y -= 1;
+        if (keys['s']) moveDir.y += 1;
+        if (keys['a']) moveDir.x -= 1;
+        if (keys['d']) moveDir.x += 1;
+
+        if (moveDir.magnitude() > 0) {
+            const normalized = moveDir.normalize();
+            this.vel.x = normalized.x * this.speed;
+            this.vel.y = normalized.y * this.speed;
+        }
+
+        // Rotation towards mouse
+        const dx = mousePos.x - 400;
+        this.rotation = Math.atan2(200 - mousePos.y, mousePos.x - 400);
+    }
+
+    update(dt, worldWidth, worldHeight) {
+        // Update position
+        this.pos.x += this.vel.x * dt;
+        this.pos.y += this.vel.y * dt;
+
+        // Clamp to world bounds
+        this.pos.x = Math.max(20, Math.min(worldWidth - 20, this.pos.x));
+        this.pos.y = Math.max(20, Math.min(worldHeight - 20, this.pos.y));
+
+        // Update cooldowns
+        this.meleeCooldown -= dt;
+        this.asteroidCooldown -= dt;
+
+        // Update asteroids
+        for (let i = this.asteroids.length - 1; i >= 0; i--) {
+            const ast = this.asteroids[i];
+            ast.x += ast.vx * dt;
+            ast.y += ast.vy * dt;
+            ast.lifetime -= dt;
+
+            // Remove dead asteroids
+            if (ast.lifetime <= 0) {
+                this.asteroids.splice(i, 1);
+            }
+        }
+    }
+
+    meleeAttack() {
+        if (this.meleeCooldown <= 0) {
+            this.meleeCooldown = 0.3;
+            return true;
+        }
+        return false;
+    }
+
+    launchAsteroid(targetX, targetY) {
+        if (this.asteroidCooldown <= 0) {
+            this.asteroidCooldown = this.asteroidCooldownMax;
+
+            const dx = targetX - this.pos.x;
+            const dy = targetY - this.pos.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const speed = 200;
+
+            this.asteroids.push({
+                x: this.pos.x,
+                y: this.pos.y,
+                vx: (dx / dist) * speed,
+                vy: (dy / dist) * speed,
+                lifetime: 10,
+                radius: 3,
+                damage: this.asteroidDamage,
+            });
+            return true;
+        }
+        return false;
+    }
+
+    takeDamage(damage) {
+        this.health -= damage;
+        if (this.health < 0) this.health = 0;
+    }
+
+    heal(amount) {
+        this.health = Math.min(this.maxHealth, this.health + amount);
+    }
+
+    isAlive() {
+        return this.health > 0;
+    }
+
+    draw(ctx) {
+        // Draw ship
+        ctx.save();
+        ctx.translate(this.pos.x, this.pos.y);
+        ctx.rotate(this.rotation);
+
+        ctx.fillStyle = '#00ff00';
+        ctx.beginPath();
+        ctx.moveTo(10, 0);
+        ctx.lineTo(-8, -8);
+        ctx.lineTo(-4, 0);
+        ctx.lineTo(-8, 8);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.restore();
+
+        // Draw asteroids
+        ctx.fillStyle = '#ffc800';
+        for (const ast of this.asteroids) {
+            ctx.beginPath();
+            ctx.arc(ast.x, ast.y, ast.radius, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+}
+
+class Enemy {
+    constructor(x, y, type = 'fighter') {
+        this.pos = new Vector2(x, y);
+        this.vel = new Vector2(0, 0);
+        this.radius = 6;
+
+        // Stats
+        this.type = type;
+        if (type === 'fighter') {
+            this.health = 30;
+            this.maxHealth = 30;
+            this.speed = 100;
+            this.damage = 8;
+            this.attackRange = 25;
+            this.attackCooldown = 1.0;
+            this.color = '#ff6464';
+        } else {
+            // scout
+            this.health = 15;
+            this.maxHealth = 15;
+            this.speed = 175;
+            this.damage = 5;
+            this.attackRange = 20;
+            this.attackCooldown = 1.5;
+            this.color = '#ffc864';
+        }
+
+        // AI
+        this.attackTimer = 0;
+        this.behaviorTimer = 0;
+        this.behavior = 'patrol'; // patrol, chase, attack
+    }
+
+    update(dt, player, worldWidth, worldHeight) {
+        // AI behavior
+        if (player && player.isAlive()) {
+            const dx = player.pos.x - this.pos.x;
+            const dy = player.pos.y - this.pos.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            if (distance < this.attackRange) {
+                this.behavior = 'attack';
+            } else if (distance < 100) {
+                this.behavior = 'chase';
+            } else {
+                this.behavior = 'patrol';
+            }
+
+            if (this.behavior === 'chase') {
+                const norm = new Vector2(dx / distance, dy / distance);
+                this.vel = norm.multiply(this.speed);
+            } else if (this.behavior === 'attack') {
+                const norm = new Vector2(dx / distance, dy / distance);
+                this.vel = norm.multiply(this.speed * 0.5);
+                this.attackTimer -= dt;
+            } else {
+                this.behaviorTimer -= dt;
+                if (this.behaviorTimer <= 0) {
+                    const angle = Math.random() * Math.PI * 2;
+                    this.vel = new Vector2(Math.cos(angle), Math.sin(angle)).multiply(
+                        this.speed * 0.3
+                    );
+                    this.behaviorTimer = 2 + Math.random() * 2;
+                }
+            }
+        }
+
+        // Update position
+        this.pos.x += this.vel.x * dt;
+        this.pos.y += this.vel.y * dt;
+
+        // Clamp to world
+        this.pos.x = Math.max(20, Math.min(worldWidth - 20, this.pos.x));
+        this.pos.y = Math.max(20, Math.min(worldHeight - 20, this.pos.y));
+    }
+
+    takeDamage(damage) {
+        this.health -= damage;
+    }
+
+    isAlive() {
+        return this.health > 0;
+    }
+
+    draw(ctx) {
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(this.pos.x, this.pos.y, this.radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Health bar
+        const barWidth = 20;
+        const barHeight = 3;
+        ctx.fillStyle = '#ff0000';
+        ctx.fillRect(this.pos.x - barWidth / 2, this.pos.y - 15, barWidth, barHeight);
+
+        const healthPercent = this.health / this.maxHealth;
+        ctx.fillStyle = '#00ff00';
+        ctx.fillRect(this.pos.x - barWidth / 2, this.pos.y - 15, barWidth * healthPercent, barHeight);
+    }
+}
+
+class Level {
+    constructor(levelNumber) {
+        this.levelNumber = levelNumber;
+        this.enemies = [];
+        this.completed = false;
+        this.enemiesDefeated = 0;
+
+        if (levelNumber === 1) {
+            this.name = 'First Encounter';
+            this.enemies = [
+                new Enemy(100, 150, 'scout'),
+                new Enemy(300, 150, 'scout'),
+                new Enemy(200, 250, 'fighter'),
+            ];
+        } else {
+            this.name = 'Deep Space';
+            this.enemies = [
+                new Enemy(150, 100, 'fighter'),
+                new Enemy(350, 100, 'fighter'),
+                new Enemy(200, 200, 'fighter'),
+                new Enemy(100, 300, 'scout'),
+                new Enemy(400, 300, 'scout'),
+            ];
+        }
+    }
+
+    update(dt, player, worldWidth, worldHeight) {
+        // Update enemies
+        for (let i = this.enemies.length - 1; i >= 0; i--) {
+            const enemy = this.enemies[i];
+            enemy.update(dt, player, worldWidth, worldHeight);
+
+            if (!enemy.isAlive()) {
+                this.enemies.splice(i, 1);
+                this.enemiesDefeated++;
+            }
+        }
+
+        // Check collisions with asteroids
+        for (const asteroid of player.asteroids) {
+            for (let i = this.enemies.length - 1; i >= 0; i--) {
+                const enemy = this.enemies[i];
+                const dx = asteroid.x - enemy.pos.x;
+                const dy = asteroid.y - enemy.pos.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < asteroid.radius + enemy.radius) {
+                    enemy.takeDamage(asteroid.damage);
+                    const idx = player.asteroids.indexOf(asteroid);
+                    if (idx > -1) player.asteroids.splice(idx, 1);
+                    break;
+                }
+            }
+        }
+
+        // Check if level complete
+        if (this.enemies.length === 0) {
+            this.completed = true;
+        }
+    }
+
+    draw(ctx) {
+        for (const enemy of this.enemies) {
+            enemy.draw(ctx);
+        }
+    }
+}
+
+class GameManager {
+    constructor(canvas) {
+        this.canvas = canvas;
+        this.ctx = canvas.getContext('2d');
+        this.canvas.width = 800;
+        this.canvas.height = 600;
+
+        this.state = 'menu'; // menu, playing, levelComplete, gameOver
+        this.player = null;
+        this.level = null;
+
+        this.keys = {};
+        this.mousePos = new Vector2(400, 300);
+
+        this.setupEventListeners();
+    }
+
+    setupEventListeners() {
+        window.addEventListener('keydown', (e) => {
+            const key = e.key.toLowerCase();
+            if (key === 'w' || key === 'a' || key === 's' || key === 'd') {
+                this.keys[key] = true;
+            }
+            if (key === ' ') {
+                e.preventDefault();
+                this.handleSpacePress();
+            }
+            if (key === 'escape') {
+                this.state = 'menu';
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            const key = e.key.toLowerCase();
+            if (key === 'w' || key === 'a' || key === 's' || key === 'd') {
+                this.keys[key] = false;
+            }
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            const rect = this.canvas.getBoundingClientRect();
+            this.mousePos.x = e.clientX - rect.left;
+            this.mousePos.y = e.clientY - rect.top;
+        });
+
+        this.canvas.addEventListener('click', () => {
+            if (this.state === 'playing' && this.player) {
+                this.player.launchAsteroid(this.mousePos.x, this.mousePos.y);
+            }
+        });
+
+        // Touch support for mobile
+        document.addEventListener('touchmove', (e) => {
+            const rect = this.canvas.getBoundingClientRect();
+            const touch = e.touches[0];
+            this.mousePos.x = touch.clientX - rect.left;
+            this.mousePos.y = touch.clientY - rect.top;
+        });
+
+        this.canvas.addEventListener('touchstart', () => {
+            if (this.state === 'playing' && this.player) {
+                this.player.launchAsteroid(this.mousePos.x, this.mousePos.y);
+            }
+        });
+    }
+
+    handleSpacePress() {
+        if (this.state === 'menu') {
+            this.startLevel(1);
+        } else if (this.state === 'levelComplete') {
+            if (this.level.levelNumber < 2) {
+                this.startLevel(this.level.levelNumber + 1);
+            } else {
+                this.state = 'menu';
+            }
+        } else if (this.state === 'gameOver') {
+            this.state = 'menu';
+        }
+    }
+
+    startLevel(levelNumber) {
+        this.player = new Player(400, 300);
+        this.level = new Level(levelNumber);
+        this.state = 'playing';
+    }
+
+    update(dt) {
+        if (this.state === 'playing') {
+            this.player.handleInput(this.keys, this.mousePos);
+            this.player.update(dt, this.canvas.width, this.canvas.height);
+
+            if (this.keys[' ']) {
+                this.player.meleeAttack();
+            }
+
+            this.level.update(dt, this.player, this.canvas.width, this.canvas.height);
+
+            // Check collisions with enemies
+            for (const enemy of this.level.enemies) {
+                const dx = this.player.pos.x - enemy.pos.x;
+                const dy = this.player.pos.y - enemy.pos.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < this.player.radius + enemy.radius + 5) {
+                    this.player.takeDamage(enemy.damage * dt);
+                }
+            }
+
+            // Check level complete
+            if (this.level.completed) {
+                this.state = 'levelComplete';
+            }
+
+            // Check game over
+            if (!this.player.isAlive()) {
+                this.state = 'gameOver';
+            }
+        }
+    }
+
+    draw() {
+        // Clear canvas
+        this.ctx.fillStyle = '#000';
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+        // Draw stars
+        this.ctx.fillStyle = '#fff';
+        for (let i = 0; i < 50; i++) {
+            const x = (i * 73 + 42) % this.canvas.width;
+            const y = (i * 137 + 89) % this.canvas.height;
+            this.ctx.fillRect(x, y, 1, 1);
+        }
+
+        if (this.state === 'menu') {
+            this.drawMenu();
+        } else if (this.state === 'playing') {
+            this.drawGame();
+        } else if (this.state === 'levelComplete') {
+            this.drawLevelComplete();
+        } else if (this.state === 'gameOver') {
+            this.drawGameOver();
+        }
+    }
+
+    drawMenu() {
+        this.ctx.fillStyle = '#00ffff';
+        this.ctx.font = 'bold 48px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('SPACE DRIVE', this.canvas.width / 2, 100);
+
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.font = '24px Arial';
+        this.ctx.fillText('Press SPACE to start', this.canvas.width / 2, 250);
+
+        this.ctx.fillStyle = '#808080';
+        this.ctx.font = '16px Arial';
+        this.ctx.fillText('Beta v0.1 - Web Version', this.canvas.width / 2, this.canvas.height - 50);
+    }
+
+    drawGame() {
+        this.player.draw(this.ctx);
+        this.level.draw(this.ctx);
+
+        // Draw UI
+        this.ctx.fillStyle = '#00ff00';
+        this.ctx.font = '16px Arial';
+        this.ctx.textAlign = 'left';
+        this.ctx.fillText(`HP: ${Math.ceil(this.player.health)}/${this.player.maxHealth}`, 10, 20);
+        this.ctx.fillText(`Level ${this.level.levelNumber}: ${this.level.name}`, 10, 40);
+        this.ctx.fillText(`Enemies: ${this.level.enemies.length}`, 10, 60);
+
+        this.ctx.fillStyle = '#808080';
+        this.ctx.font = '14px Arial';
+        this.ctx.fillText('WASD: Move | MOUSE: Aim | SPACE: Attack | CLICK: Asteroid', 10, this.canvas.height - 10);
+    }
+
+    drawLevelComplete() {
+        this.ctx.fillStyle = '#00ff00';
+        this.ctx.font = 'bold 48px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('LEVEL COMPLETE!', this.canvas.width / 2, 200);
+
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.font = '24px Arial';
+        if (this.level.levelNumber < 2) {
+            this.ctx.fillText('Press SPACE for next level', this.canvas.width / 2, 300);
+        } else {
+            this.ctx.fillText('Press SPACE to return to menu', this.canvas.width / 2, 300);
+        }
+    }
+
+    drawGameOver() {
+        this.ctx.fillStyle = '#ff0000';
+        this.ctx.font = 'bold 48px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('GAME OVER', this.canvas.width / 2, 200);
+
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.font = '24px Arial';
+        this.ctx.fillText('Press SPACE to return to menu', this.canvas.width / 2, 300);
+    }
+
+    run() {
+        let lastTime = Date.now();
+
+        const gameLoop = () => {
+            const now = Date.now();
+            const dt = (now - lastTime) / 1000;
+            lastTime = now;
+
+            this.update(Math.min(dt, 0.016)); // Cap dt to 60 FPS
+            this.draw();
+
+            requestAnimationFrame(gameLoop);
+        };
+
+        requestAnimationFrame(gameLoop);
+    }
+}
+
+// Initialize game when page loads
+window.addEventListener('load', () => {
+    const canvas = document.getElementById('gameCanvas');
+    const game = new GameManager(canvas);
+    game.run();
+});
